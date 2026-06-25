@@ -1,7 +1,9 @@
 use std::ffi::OsString;
 
 use open_with_codex_app::cli::{parse_command, Command};
-use open_with_codex_app::platform::macos_assets::workflow_shell_script;
+use open_with_codex_app::platform::macos_assets::{
+    document_wflow_xml, info_plist_xml, workflow_shell_script,
+};
 use open_with_codex_app::registration::{plan_registration, RegistrationAction, RegistrationState};
 
 #[cfg(windows)]
@@ -147,4 +149,28 @@ fn macos_workflow_script_opens_each_folder_argument() {
 
     assert!(script.contains("for item in \"$@\"; do"));
     assert!(script.contains("\"/Users/me/Library/Application Support/OpenAI/Codex/OpenWithCodexApp/open-with-codex-app\" app \"$item\""));
+    assert!(script.contains(">/dev/null 2>&1"));
+}
+
+#[test]
+fn macos_service_info_plist_is_bound_to_finder_folders() {
+    let plist = info_plist_xml();
+
+    assert!(plist.contains("<key>CFBundleIdentifier</key>"));
+    assert!(plist.contains("<string>com.openai.codex.open-with-codex-app.finder-service</string>"));
+    assert!(plist.contains("<key>NSRequiredContext</key>"));
+    assert!(plist.contains("<string>com.apple.finder</string>"));
+    assert!(plist.contains("<string>public.folder</string>"));
+}
+
+#[test]
+fn macos_workflow_document_declares_folder_input_and_no_service_output() {
+    let workflow = document_wflow_xml(
+        "/Users/me/Library/Application Support/OpenAI/Codex/OpenWithCodexApp/open-with-codex-app",
+    );
+
+    assert!(workflow.contains("<string>com.apple.finder</string>"));
+    assert!(workflow.contains("<string>com.apple.Automator.fileSystemObject.folder</string>"));
+    assert!(workflow.contains("<string>com.apple.Automator.nothing</string>"));
+    assert!(workflow.contains("<key>serviceProcessesInput</key>"));
 }
