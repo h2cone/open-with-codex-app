@@ -19,6 +19,19 @@ This tool is useful when you want a native "Open with Codex app" entry in the fi
 
 Other platforms build the crate but report that desktop integrations are unsupported.
 
+## Installation
+
+Download the latest release for your platform from
+[GitHub Releases](https://github.com/h2cone/open-with-codex-app/releases/latest).
+
+| Platform | Architecture | Download |
+|----------|--------------|----------|
+| Linux | x86_64 | [open-with-codex-app-x86_64-linux.tar.gz](https://github.com/h2cone/open-with-codex-app/releases/latest/download/open-with-codex-app-x86_64-linux.tar.gz) |
+| Linux | arm64 | [open-with-codex-app-aarch64-linux.tar.gz](https://github.com/h2cone/open-with-codex-app/releases/latest/download/open-with-codex-app-aarch64-linux.tar.gz) |
+| macOS | Apple Silicon | [open-with-codex-app-aarch64-darwin.tar.gz](https://github.com/h2cone/open-with-codex-app/releases/latest/download/open-with-codex-app-aarch64-darwin.tar.gz) |
+| macOS | Intel | [open-with-codex-app-x86_64-darwin.tar.gz](https://github.com/h2cone/open-with-codex-app/releases/latest/download/open-with-codex-app-x86_64-darwin.tar.gz) |
+| Windows | x86_64 | [open-with-codex-app-x86_64-windows.zip](https://github.com/h2cone/open-with-codex-app/releases/latest/download/open-with-codex-app-x86_64-windows.zip) |
+
 ## Build
 
 ```powershell
