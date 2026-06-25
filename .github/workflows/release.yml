@@ -83,13 +83,11 @@ jobs:
           binary="${PROJECT_NAME}${{ matrix.binary_ext }}"
           package_dir="dist/${PROJECT_NAME}-${tag}-${{ matrix.archive_target }}"
           versioned_archive="${PROJECT_NAME}-${tag}-${{ matrix.archive_target }}.tar.gz"
-          stable_archive="${PROJECT_NAME}-${{ matrix.archive_target }}.tar.gz"
 
           mkdir -p "$package_dir"
           cp "target/${{ matrix.target }}/release/$binary" "$package_dir/"
           chmod +x "$package_dir/$binary"
           tar -C dist -czf "dist/$versioned_archive" "${PROJECT_NAME}-${tag}-${{ matrix.archive_target }}"
-          cp "dist/$versioned_archive" "dist/$stable_archive"
 
       - name: Package zip
         if: matrix.archive_ext == 'zip'
@@ -99,12 +97,10 @@ jobs:
           $binary = "${env:PROJECT_NAME}${{ matrix.binary_ext }}"
           $packageDir = "dist/${env:PROJECT_NAME}-$tag-${{ matrix.archive_target }}"
           $versionedArchive = "dist/${env:PROJECT_NAME}-$tag-${{ matrix.archive_target }}.zip"
-          $stableArchive = "dist/${env:PROJECT_NAME}-${{ matrix.archive_target }}.zip"
 
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/$binary" $packageDir
           Compress-Archive -Path "$packageDir/*" -DestinationPath $versionedArchive -Force
-          Copy-Item $versionedArchive $stableArchive -Force
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
