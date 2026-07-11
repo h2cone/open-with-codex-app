@@ -11,7 +11,7 @@ This tool is useful when you want a native "Open with Codex app" entry in the fi
 - Registers a Windows Explorer folder and folder-background context menu.
 - Registers a macOS Finder service.
 - Installs a `codex app <dir>` command shim.
-- Opens projects through Codex app's `--open-project <dir>` argument.
+- Opens projects through Codex app's bundled `codex app <dir>` command.
 - Uses only user-scoped install locations and can uninstall its own integrations.
 
 ## Supported Platforms
@@ -20,6 +20,11 @@ This tool is useful when you want a native "Open with Codex app" entry in the fi
 - macOS
 
 Other platforms build the crate but report that desktop integrations are unsupported.
+
+## Installation
+
+Download the latest release for your platform from
+[GitHub Releases](https://github.com/h2cone/open-with-codex-app/releases/latest).
 
 ## Build
 

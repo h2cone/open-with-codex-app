@@ -20,22 +20,21 @@ pub fn install_integrations() -> io::Result<InstallReport> {
     }
 
     let launcher = stable_launcher_path()?;
-    if copy_current_exe_if_missing(&launcher)? {
+    if copy_current_exe_if_changed(&launcher)? {
         make_executable(&launcher)?;
         report.installed("stable Open with Codex app launcher");
     } else {
         report.skipped("stable Open with Codex app launcher already exists");
     }
 
-    if finder_workflow_registered()? {
-        report.skipped("Open with Codex app Finder service already registered");
-    } else {
-        register_finder_workflow(&launcher)?;
+    if register_finder_workflow(&launcher)? {
         report.installed("Open with Codex app Finder service");
+    } else {
+        report.skipped("Open with Codex app Finder service already registered");
     }
 
     let shim = cli_shim_path()?;
-    if copy_current_exe_if_missing(&shim)? {
+    if copy_current_exe_if_changed(&shim)? {
         make_executable(&shim)?;
         report.installed("codex app command shim");
     } else {
@@ -72,16 +71,32 @@ pub fn open_project(path: &Path) -> io::Result<String> {
         return Ok("skipped: Codex app not installed".to_string());
     };
 
-    Command::new("open")
-        .arg("-n")
+    if let Some(codex_cli) = codex_cli_in_app_bundle(&app) {
+        let status = Command::new(codex_cli)
+            .arg("app")
+            .arg(&project)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+
+        if status.success() {
+            return Ok(format!("opened: {}", project.display()));
+        }
+    }
+
+    let status = Command::new("open")
+        .arg("-a")
         .arg(app)
-        .arg("--args")
-        .arg("--open-project")
         .arg(&project)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
+        .status()?;
+
+    if !status.success() {
+        return Err(io::Error::other("failed to open project in Codex app"));
+    }
 
     Ok(format!("opened: {}", project.display()))
 }
@@ -95,17 +110,20 @@ pub fn forward_to_existing_codex(args: &[OsString]) -> io::Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn register_finder_workflow(launcher: &Path) -> io::Result<()> {
+fn register_finder_workflow(launcher: &Path) -> io::Result<bool> {
     let workflow = finder_workflow_path()?;
     let contents = workflow.join("Contents");
-    fs::create_dir_all(&contents)?;
+    let resources = contents.join("Resources");
+    fs::create_dir_all(&resources)?;
     let launcher_text = launcher.to_string_lossy();
-    fs::write(contents.join("Info.plist"), info_plist_xml())?;
-    fs::write(
-        contents.join("document.wflow"),
-        document_wflow_xml(&launcher_text),
-    )?;
-    Ok(())
+    let document = document_wflow_xml(&launcher_text);
+    let mut changed = false;
+
+    changed |= write_file_if_changed(&contents.join("Info.plist"), &info_plist_xml())?;
+    changed |= write_file_if_changed(&resources.join("document.wflow"), &document)?;
+    changed |= write_file_if_changed(&contents.join("document.wflow"), &document)?;
+
+    Ok(changed)
 }
 
 fn remove_finder_workflow(report: &mut InstallReport) -> io::Result<()> {
@@ -119,12 +137,12 @@ fn remove_finder_workflow(report: &mut InstallReport) -> io::Result<()> {
     Ok(())
 }
 
-fn finder_workflow_registered() -> io::Result<bool> {
-    Ok(finder_workflow_path()?.exists())
-}
-
-fn copy_current_exe_if_missing(destination: &Path) -> io::Result<bool> {
-    if destination.exists() {
+fn copy_current_exe_if_changed(destination: &Path) -> io::Result<bool> {
+    let current = env::current_exe()?;
+    if current == destination {
+        return Ok(false);
+    }
+    if destination.exists() && files_have_same_contents(&current, destination).unwrap_or(false) {
         return Ok(false);
     }
 
@@ -132,12 +150,16 @@ fn copy_current_exe_if_missing(destination: &Path) -> io::Result<bool> {
         fs::create_dir_all(parent)?;
     }
 
-    let current = env::current_exe()?;
-    if current == destination {
+    fs::copy(current, destination)?;
+    Ok(true)
+}
+
+fn write_file_if_changed(path: &Path, content: &str) -> io::Result<bool> {
+    if fs::read_to_string(path).is_ok_and(|existing| existing == content) {
         return Ok(false);
     }
 
-    fs::copy(current, destination)?;
+    fs::write(path, content)?;
     Ok(true)
 }
 
@@ -222,6 +244,11 @@ fn find_codex_app() -> Option<PathBuf> {
         .filter(|path| path.exists())
         .or_else(find_standard_codex_bundle)
         .or_else(find_codex_with_mdfind)
+}
+
+fn codex_cli_in_app_bundle(app: &Path) -> Option<PathBuf> {
+    let cli = app.join("Contents").join("Resources").join("codex");
+    cli.is_file().then_some(cli)
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -393,4 +420,22 @@ fn find_forward_target() -> io::Result<Option<PathBuf>> {
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::codex_cli_in_app_bundle;
+
+    #[test]
+    fn finds_codex_cli_inside_app_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Codex.app");
+        let cli = app.join("Contents").join("Resources").join("codex");
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli, "").unwrap();
+
+        assert_eq!(codex_cli_in_app_bundle(&app), Some(cli));
+    }
 }
