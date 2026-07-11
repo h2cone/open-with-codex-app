@@ -2,6 +2,8 @@
 
 Register user-scoped desktop integrations for opening folders in the Codex desktop app.
 
+Supports both the current ChatGPT desktop package entry point and the legacy Codex desktop entry point on Windows.
+
 This tool is useful when you want a native "Open with Codex app" entry in the file manager and a `codex app <dir>` command that launches the desktop app with a project directory.
 
 ## Features

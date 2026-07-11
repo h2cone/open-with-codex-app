@@ -248,12 +248,11 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 fn windows_app_execution_alias() -> Option<PathBuf> {
-    let alias = local_app_data()
-        .ok()?
-        .join("Microsoft")
-        .join("WindowsApps")
-        .join("Codex.exe");
-    alias.is_file().then_some(alias)
+    let aliases = local_app_data().ok()?.join("Microsoft").join("WindowsApps");
+    ["ChatGPT.exe", "Codex.exe"]
+        .into_iter()
+        .map(|name| aliases.join(name))
+        .find(|path| path.is_file())
 }
 
 fn scan_windows_apps_for_codex() -> Option<PathBuf> {
@@ -268,16 +267,16 @@ fn scan_windows_apps_for_codex() -> Option<PathBuf> {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             name.starts_with("OpenAI.Codex_")
-                .then(|| entry.path().join("app").join("Codex.exe"))
+                .then(|| find_app_executable_in_package(&entry.path()))
         })
-        .filter(|path| path.is_file())
+        .flatten()
         .collect::<Vec<_>>();
     candidates.sort();
     candidates.pop()
 }
 
 fn find_codex_with_powershell() -> Option<PathBuf> {
-    let script = r#"$pkg = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1; if ($pkg) { Join-Path $pkg.InstallLocation 'app\Codex.exe' }"#;
+    let script = r#"$pkg = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1; if ($pkg) { @('app\ChatGPT.exe', 'app\Codex.exe') | ForEach-Object { $candidate = Join-Path $pkg.InstallLocation $_; if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate; break } } }"#;
     let output = Command::new(system_powershell())
         .args([
             "-NoProfile",
@@ -300,6 +299,13 @@ fn find_codex_with_powershell() -> Option<PathBuf> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
+fn find_app_executable_in_package(package: &Path) -> Option<PathBuf> {
+    ["ChatGPT.exe", "Codex.exe"]
+        .into_iter()
+        .map(|name| package.join("app").join(name))
         .find(|path| path.is_file())
 }
 
@@ -581,7 +587,7 @@ fn system_powershell() -> PathBuf {
 mod tests {
     use std::fs;
 
-    use super::copy_file_if_different;
+    use super::{copy_file_if_different, find_app_executable_in_package};
 
     #[test]
     fn copy_file_if_different_replaces_existing_foreign_file() {
@@ -609,5 +615,32 @@ mod tests {
 
         assert!(!copied);
         assert_eq!(fs::read(&destination).unwrap(), b"same binary");
+    }
+
+    #[test]
+    fn package_resolution_prefers_chatgpt_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("app");
+        fs::create_dir(&app).unwrap();
+        fs::write(app.join("Codex.exe"), b"legacy executable").unwrap();
+        fs::write(app.join("ChatGPT.exe"), b"current executable").unwrap();
+
+        assert_eq!(
+            find_app_executable_in_package(temp.path()),
+            Some(app.join("ChatGPT.exe"))
+        );
+    }
+
+    #[test]
+    fn package_resolution_falls_back_to_legacy_codex_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("app");
+        fs::create_dir(&app).unwrap();
+        fs::write(app.join("Codex.exe"), b"legacy executable").unwrap();
+
+        assert_eq!(
+            find_app_executable_in_package(temp.path()),
+            Some(app.join("Codex.exe"))
+        );
     }
 }
