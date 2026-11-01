@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 
 [target.'cfg(windows)'.dependencies]
+percent-encoding = "2"
 winreg = "0.52"
 
 [dev-dependencies]

@@ -10,6 +10,9 @@ mod macos;
 #[cfg(windows)]
 pub mod windows;
 
+#[cfg(windows)]
+mod powershell;
+
 #[cfg(not(any(windows, target_os = "macos")))]
 mod unsupported;
 

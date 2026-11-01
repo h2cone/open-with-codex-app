@@ -2,9 +2,11 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ};
 use winreg::{RegKey, RegValue};
 
@@ -53,6 +55,25 @@ pub fn install_integrations() -> io::Result<InstallReport> {
         report.installed("codex app command shim directory on user PATH");
     }
 
+    let router = integration_root()?.join("powershell.ps1");
+    if super::powershell::write_router(&router)? {
+        report.installed("PowerShell codex app command router");
+    } else {
+        report.skipped("PowerShell codex app command router already installed");
+    }
+    for profile in powershell_profiles()? {
+        let subject = format!("PowerShell integration in {}", profile.display());
+        if super::powershell::install_profile(&profile)? {
+            report.installed(&subject);
+        } else {
+            report.skipped(&subject);
+        }
+    }
+    report.lines.push(format!(
+        "For an already open PowerShell session, run: . '{}'",
+        router.to_string_lossy().replace('\'', "''")
+    ));
+
     Ok(report)
 }
 
@@ -61,6 +82,14 @@ pub fn uninstall_integrations() -> io::Result<InstallReport> {
 
     remove_context_menu(&mut report)?;
     remove_cli_path(&mut report)?;
+    for profile in powershell_profiles()? {
+        let subject = format!("PowerShell integration in {}", profile.display());
+        if super::powershell::uninstall_profile(&profile)? {
+            report.removed(&subject);
+        } else {
+            report.skipped(&subject);
+        }
+    }
     remove_integration_files(&mut report)?;
 
     Ok(report)
@@ -68,21 +97,24 @@ pub fn uninstall_integrations() -> io::Result<InstallReport> {
 
 pub fn open_project(path: &Path) -> io::Result<String> {
     let project = strip_windows_verbatim_prefix(&canonical_project_dir(path)?);
-    let Some(codex) = find_codex_app() else {
+    if find_codex_app().is_none() {
         return Ok("skipped: Codex app not installed".to_string());
-    };
-
-    match spawn_codex(&codex, &project) {
-        Ok(()) => Ok(format!("opened: {}", project.display())),
-        Err(first_error) => {
-            if let Some(alias) = windows_app_execution_alias() {
-                if alias != codex && spawn_codex(&alias, &project).is_ok() {
-                    return Ok(format!("opened: {}", project.display()));
-                }
-            }
-            Err(first_error)
-        }
     }
+
+    let override_executable = env_path("CODEX_APP_EXECUTABLE").filter(|path| path.is_file());
+    let output = project_launch_command(override_executable.as_deref(), &project)
+        .stdin(Stdio::null())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW: hide only the helper console.
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "Explorer could not launch the Codex app: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    // ShellExecute acknowledges dispatch, not the eventual application UI.
+    Ok(format!("requested: {}", project.display()))
 }
 
 pub fn forward_to_existing_codex(args: &[OsString]) -> io::Result<i32> {
@@ -235,12 +267,33 @@ fn local_app_data() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))
 }
 
+fn powershell_profiles() -> io::Result<Vec<PathBuf>> {
+    let output = Command::new(system_powershell())
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding; [Environment]::GetFolderPath('MyDocuments')",
+        ])
+        .stdin(Stdio::null())
+        .output()?;
+    let documents = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || documents.is_empty() || !Path::new(&documents).is_absolute() {
+        return Err(io::Error::other(
+            "could not locate PowerShell profile directory",
+        ));
+    }
+    Ok(["PowerShell", "WindowsPowerShell"]
+        .into_iter()
+        .map(|shell| Path::new(&documents).join(shell).join("profile.ps1"))
+        .collect())
+}
+
 fn find_codex_app() -> Option<PathBuf> {
     env_path("CODEX_APP_EXECUTABLE")
         .filter(|path| path.is_file())
+        .or_else(windows_app_execution_alias)
         .or_else(scan_windows_apps_for_codex)
         .or_else(find_codex_with_powershell)
-        .or_else(windows_app_execution_alias)
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -249,7 +302,11 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 fn windows_app_execution_alias() -> Option<PathBuf> {
     let aliases = local_app_data().ok()?.join("Microsoft").join("WindowsApps");
-    ["ChatGPT.exe", "Codex.exe"]
+    find_app_execution_alias(&aliases)
+}
+
+fn find_app_execution_alias(aliases: &Path) -> Option<PathBuf> {
+    ["chatgpt-desktop.exe", "ChatGPT.exe", "Codex.exe"]
         .into_iter()
         .map(|name| aliases.join(name))
         .find(|path| path.is_file())
@@ -309,15 +366,37 @@ fn find_app_executable_in_package(package: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn spawn_codex(codex: &Path, project: &Path) -> io::Result<()> {
-    Command::new(codex)
-        .arg("--open-project")
-        .arg(project)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
+fn project_deep_link(project: &Path) -> String {
+    let path = project.to_string_lossy();
+    format!(
+        "codex://threads/new?path={}",
+        utf8_percent_encode(&path, NON_ALPHANUMERIC)
+    )
+}
+
+fn project_launch_command(override_executable: Option<&Path>, project: &Path) -> Command {
+    let url = project_deep_link(project);
+    let mut command = Command::new(system_powershell());
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Sta",
+        "-Command",
+        super::powershell::EXPLORER_LAUNCH_SCRIPT,
+    ]);
+    match override_executable {
+        Some(executable) => {
+            command.env("OPEN_WITH_CODEX_TARGET", executable);
+            command.env("OPEN_WITH_CODEX_ARGUMENTS", url);
+        }
+        None => {
+            // Use the registered protocol handler, so the app keeps its normal
+            // profile and package activation instead of an alias-named profile.
+            command.env("OPEN_WITH_CODEX_TARGET", url);
+            command.env("OPEN_WITH_CODEX_ARGUMENTS", "");
+        }
+    }
+    command
 }
 
 fn user_path_contains(dir: &Path) -> io::Result<bool> {
@@ -515,6 +594,12 @@ fn remove_integration_files(report: &mut InstallReport) -> io::Result<()> {
         .is_some_and(|current| path_is_inside(current, &root))
     {
         remove_file_if_not_running(
+            &root.join("powershell.ps1"),
+            current.as_ref(),
+            "PowerShell codex app command router",
+            report,
+        )?;
+        remove_file_if_not_running(
             &cli_shim_path()?,
             current.as_ref(),
             "codex app command shim",
@@ -586,8 +671,86 @@ fn system_powershell() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
-    use super::{copy_file_if_different, find_app_executable_in_package};
+    use super::{
+        copy_file_if_different, find_app_executable_in_package, find_app_execution_alias,
+        project_deep_link, project_launch_command,
+    };
+
+    #[test]
+    fn execution_alias_resolution_prefers_the_registered_desktop_entry_point() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["chatgpt-desktop.exe", "ChatGPT.exe", "Codex.exe"] {
+            fs::write(temp.path().join(name), b"alias").unwrap();
+        }
+
+        assert_eq!(
+            find_app_execution_alias(temp.path()),
+            Some(temp.path().join("chatgpt-desktop.exe"))
+        );
+    }
+
+    #[test]
+    fn execution_alias_resolution_supports_legacy_installations() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("Codex.exe"), b"alias").unwrap();
+
+        assert_eq!(
+            find_app_execution_alias(temp.path()),
+            Some(temp.path().join("Codex.exe"))
+        );
+    }
+
+    #[test]
+    fn project_deep_link_encodes_the_entire_path() {
+        assert_eq!(
+            project_deep_link(Path::new(r"C:\Projects\my project & test#1+100%")),
+            "codex://threads/new?path=C%3A%5CProjects%5Cmy%20project%20%26%20test%231%2B100%25"
+        );
+    }
+
+    #[test]
+    fn project_launch_preserves_unicode_and_unc_paths() {
+        for project in [r"C:\项目\测试", r"\\server\share\my project"] {
+            let url = project_deep_link(Path::new(project));
+            let encoded = url.strip_prefix("codex://threads/new?path=").unwrap();
+            let decoded = percent_encoding::percent_decode_str(encoded)
+                .decode_utf8()
+                .unwrap();
+            assert_eq!(decoded, project);
+            assert!(encoded.is_ascii());
+        }
+    }
+
+    #[test]
+    fn explorer_launch_passes_user_input_as_data_and_honors_executable_override() {
+        use std::ffi::OsStr;
+
+        let project = Path::new(r#"C:\Projects\it's a `test` $(whoami) & #1"#);
+        for executable in [None, Some(Path::new(r"C:\Program Files\Codex\ChatGPT.exe"))] {
+            let command = project_launch_command(executable, project);
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(
+                args.last().unwrap(),
+                &super::super::powershell::EXPLORER_LAUNCH_SCRIPT
+            );
+            assert!(!args
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("whoami")));
+            let values: std::collections::HashMap<_, _> = command.get_envs().collect();
+            let url = project_deep_link(project);
+            let (target, arguments) = match executable {
+                Some(path) => (path.as_os_str(), OsStr::new(&url)),
+                None => (OsStr::new(&url), OsStr::new("")),
+            };
+            assert_eq!(values[OsStr::new("OPEN_WITH_CODEX_TARGET")], Some(target));
+            assert_eq!(
+                values[OsStr::new("OPEN_WITH_CODEX_ARGUMENTS")],
+                Some(arguments)
+            );
+        }
+    }
 
     #[test]
     fn copy_file_if_different_replaces_existing_foreign_file() {

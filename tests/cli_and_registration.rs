@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 use open_with_codex_app::cli::{parse_command, Command};
 use open_with_codex_app::platform::macos_assets::{
