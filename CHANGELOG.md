@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-01
+
 ### Fixed
 
 - Register a PowerShell command router so `codex app` uses this launcher even when mise or another CLI shim precedes it on `PATH`; keep other subcommands on the existing CLI.
